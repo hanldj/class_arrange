@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <title>排班神器</title>
+    <style>
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+        }
+        th, td {
+            border: 1px solid #aaa;
+            padding: 5px;
+            text-align: center;
+        }
+        th {
+            background-color: #eee;
+        }
+        .summary {
+            margin-top: 20px;
+            font-weight: bold;
+        }
+        select, input, button {
+            padding: 5px;
+            margin: 5px;
+        }
+        .preferences {
+            margin-bottom: 20px;
+            border: 1px solid #ccc;
+            padding: 10px;
+        }
+        .preferences h3 {
+            margin-top: 0;
+        }
+        .printable {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+
+<h1>排班神器</h1>
+
+<div>
+    <label>員工名單 (用逗號分隔)：</label>
+    <input type="text" id="employeeInput" placeholder="例如：A,B,C,D,E,F,G,H" size="50" list="employeeHistory">
+    <datalist id="employeeHistory"></datalist>
+    <br>
+    <label>年份：</label>
+    <input type="number" id="yearInput" value="2025">
+    <label>月份：</label>
+    <input type="number" id="monthInput" value="5" min="1" max="12">
+    <button onclick="generatePreferences()">設定員工偏好</button>
+</div>
+
+<div id="preferencesContainer"></div>
+
+<button id="generateBtn" onclick="generateSchedule()" style="display:none;">產生班表</button>
+
+<br><br>
+
+<table id="schedule" style="display:none;">
+    <thead>
+    <tr>
+        <th>日期</th>
+        <th>星期</th>
+        <th>早班</th>
+        <th>午班</th>
+        <th>晚班</th>
+    </tr>
+    </thead>
+    <tbody></tbody>
+</table>
+
+<button id="calcBtn" onclick="calculateShifts()" style="display:none;">計算班表</button>
+<button onclick="exportCSV()" style="display:none;" id="exportBtn">匯出CSV</button>
+<button onclick="printSchedule()" style="display:none;" id="printBtn">列印班表</button>
+
+<div id="results" class="summary"></div>
+
+<div id="printArea" class="printable"></div>
+
+<script>
+let employees = [];
+let preferences = {};
+let lastYear = document.getElementById("yearInput").value;
+let lastMonth = document.getElementById("monthInput").value;
+
+document.getElementById("yearInput").addEventListener("change", detectMonthOrYearChange);
+document.getElementById("monthInput").addEventListener("change", detectMonthOrYearChange);
+
+function detectMonthOrYearChange() {
+    const currentYear = document.getElementById("yearInput").value;
+    const currentMonth = document.getElementById("monthInput").value;
+
+    if (currentYear !== lastYear || currentMonth !== lastMonth) {
+        lastYear = currentYear;
+        lastMonth = currentMonth;
+        document.getElementById("preferencesContainer").innerHTML = "";
+        document.getElementById("generateBtn").style.display = "none";
+        alert("年份或月份已改變，請重新設定員工偏好！");
+    }
+}
+
+function saveEmployeeHistory(newEntry) {
+    let history = JSON.parse(localStorage.getItem("employeeHistoryList") || "[]");
+    if (!history.includes(newEntry)) {
+        history.unshift(newEntry);
+        if (history.length > 10) history.pop();
+        localStorage.setItem("employeeHistoryList", JSON.stringify(history));
+    }
+    loadEmployeeHistory();
+}
+
+function loadEmployeeHistory() {
+    const datalist = document.getElementById("employeeHistory");
+    datalist.innerHTML = "";
+    let history = JSON.parse(localStorage.getItem("employeeHistoryList") || "[]");
+    history.forEach(item => {
+        const option = document.createElement("option");
+        option.value = item;
+        datalist.appendChild(option);
+    });
+}
+
+function generatePreferences() {
+    const empInput = document.getElementById("employeeInput").value.trim();
+    if (!empInput) {
+        alert("請輸入員工名單");
+        return;
+    }
+
+    localStorage.setItem("savedEmployeeList", empInput);
+    saveEmployeeHistory(empInput);
+
+    employees = empInput.split(",").map(e => e.trim()).filter(e => e !== "");
+    const year = parseInt(document.getElementById("yearInput").value);
+    const month = parseInt(document.getElementById("monthInput").value);
+    const daysInMonth = new Date(year, month, 0).getDate();
+
+    const container = document.getElementById("preferencesContainer");
+    container.innerHTML = "";
+
+    employees.forEach(emp => {
+        preferences[emp] = {block: [], prefer: []};
+
+        const div = document.createElement("div");
+        div.className = "preferences";
+        div.innerHTML = `<h3>${emp} 員工偏好</h3><strong>不能排班日：</strong><br>`;
+
+        for (let d = 1; d <= daysInMonth; d++) {
+            const checkbox = document.createElement("input");
+            checkbox.type = "checkbox";
+            checkbox.id = `${emp}_block_${d}`;
+            div.appendChild(checkbox);
+            div.innerHTML += `${d} `;
+        }
+
+        div.innerHTML += `<br><strong>希望排班日：</strong><br>`;
+
+        for (let d = 1; d <= daysInMonth; d++) {
+            const checkbox = document.createElement("input");
+            checkbox.type = "checkbox";
+            checkbox.id = `${emp}_prefer_${d}`;
+            div.appendChild(checkbox);
+            div.innerHTML += `${d} `;
+        }
+
+        container.appendChild(div);
+    });
+
+    document.getElementById("generateBtn").style.display = "";
+}
+
+function generateSchedule() {
+    localStorage.removeItem("savedSchedule");
+
+    const year = parseInt(document.getElementById("yearInput").value);
+    const month = parseInt(document.getElementById("monthInput").value);
+    const daysInMonth = new Date(year, month, 0).getDate();
+
+    if (employees.length > 0) {
+        const sampleEmp = employees[0];
+        const preferCheckbox = document.getElementById(`${sampleEmp}_prefer_${daysInMonth}`);
+        if (!preferCheckbox) {
+            alert("請先按下『設定員工偏好』以更新月份天數！");
+            return;
+        }
+    }
+
+    const tbody = document.querySelector("#schedule tbody");
+    tbody.innerHTML = "";
+
+    employees.forEach(emp => {
+        preferences[emp].block = [];
+        preferences[emp].prefer = [];
+
+        for (let d = 1; d <= daysInMonth; d++) {
+            if (document.getElementById(`${emp}_block_${d}`).checked) preferences[emp].block.push(d);
+            if (document.getElementById(`${emp}_prefer_${d}`).checked) preferences[emp].prefer.push(d);
+        }
+    });
+
+    const stats = {};
+    employees.forEach(emp => stats[emp] = {平日: 0, 假日: 0});
+
+    for (let day = 1; day <= daysInMonth; day++) {
+        const date = new Date(year, month - 1, day);
+        const weekday = ["日", "一", "二", "三", "四", "五", "六"][date.getDay()];
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td>${year}/${month}/${day}</td><td>${weekday}</td>`;
+
+        const isHoliday = (weekday === "六" || weekday === "日");
+        const shifts = ["", "", ""];
+
+        const getSortedEmployees = () => employees.slice().sort((a, b) => stats[a][isHoliday ? "假日" : "平日"] - stats[b][isHoliday ? "假日" : "平日"]);
+
+        const empPool = getSortedEmployees().filter(emp => !preferences[emp].block.includes(day));
+        const preferEmp = empPool.filter(emp => preferences[emp].prefer.includes(day));
+        const combinedPool = preferEmp.concat(empPool.filter(e => !preferEmp.includes(e)));
+
+        ["早班", "午班", "晚班"].forEach((shiftName, shiftIdx) => {
+            if (combinedPool.length > 0) {
+                const selected = combinedPool.shift();
+                shifts[shiftIdx] = selected;
+                stats[selected][isHoliday ? "假日" : "平日"]++;
+            }
+        });
+
+        shifts.forEach(name => {
+            const td = document.createElement("td");
+            const select = document.createElement("select");
+            const emptyOption = document.createElement("option");
+            emptyOption.value = "";
+            emptyOption.text = "-";
+            select.appendChild(emptyOption);
+
+            employees.forEach(emp => {
+                const option = document.createElement("option");
+                option.value = emp;
+                option.text = emp;
+                if (emp === name) option.selected = true;
+                select.appendChild(option);
+            });
+
+            td.appendChild(select);
+            tr.appendChild(td);
+        });
+
+        tbody.appendChild(tr);
+    }
+
+    document.getElementById("schedule").style.display = "";
+    document.getElementById("calcBtn").style.display = "";
+    document.getElementById("exportBtn").style.display = "";
+    document.getElementById("printBtn").style.display = "";
+    saveSchedule();
+}
+
+function calculateShifts() {
+    const result = {};
+    employees.forEach(emp => result[emp] = {平日: 0, 假日: 0});
+
+    const rows = document.querySelectorAll("#schedule tbody tr");
+    rows.forEach(row => {
+        const weekday = row.children[1].textContent;
+        const isHoliday = (weekday === "六" || weekday === "日");
+        for (let i = 2; i <= 4; i++) {
+            const emp = row.children[i].querySelector("select").value;
+            if (emp !== "") isHoliday ? result[emp].假日++ : result[emp].平日++;
+        }
+    });
+
+    const resultDiv = document.getElementById("results");
+    resultDiv.innerHTML = "<h3>統計結果</h3>";
+    for (const emp in result) resultDiv.innerHTML += `員工 ${emp} - 平日班: ${result[emp].平日}，假日班: ${result[emp].假日}<br>`;
+}
+
+function exportCSV() {
+    let csv = "\ufeff" + "日期,星期,早班,午班,晚班\n";
+    document.querySelectorAll("#schedule tbody tr").forEach(row => {
+        const data = Array.from(row.children).map(td => td.querySelector("select") ? td.querySelector("select").value : td.textContent);
+        csv += data.join(",") + "\n";
+    });
+
+    csv += "\n統計結果\n";
+
+    const result = {};
+    employees.forEach(emp => result[emp] = {平日: 0, 假日: 0});
+
+    const rows = document.querySelectorAll("#schedule tbody tr");
+    rows.forEach(row => {
+        const weekday = row.children[1].textContent;
+        const isHoliday = (weekday === "六" || weekday === "日");
+        for (let i = 2; i <= 4; i++) {
+            const emp = row.children[i].querySelector("select").value;
+            if (emp !== "") isHoliday ? result[emp].假日++ : result[emp].平日++;
+        }
+    });
+
+    for (const emp in result) {
+        csv += `員工 ${emp} - 平日班: ${result[emp].平日}，假日班: ${result[emp].假日}\n`;
+    }
+
+    const blob = new Blob([csv], {type: "text/csv;charset=utf-8;"});
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = "班表.csv";
+    link.click();
+}
+
+function saveSchedule() {
+    const data = [];
+    document.querySelectorAll("#schedule tbody tr").forEach(row => {
+        const rowData = [];
+        for (let i = 0; i < 5; i++) {
+            rowData.push(row.children[i].querySelector("select") ? row.children[i].querySelector("select").value : row.children[i].textContent);
+        }
+        data.push(rowData);
+    });
+    localStorage.setItem("savedSchedule", JSON.stringify(data));
+}
+
+function loadSchedule() {
+    const data = JSON.parse(localStorage.getItem("savedSchedule"));
+    if (!data) return;
+
+    const tbody = document.querySelector("#schedule tbody");
+    tbody.innerHTML = "";
+    data.forEach(rowData => {
+        const tr = document.createElement("tr");
+        rowData.forEach((value, idx) => {
+            const td = document.createElement("td");
+            if (idx < 2) td.textContent = value;
+            else {
+                const select = document.createElement("select");
+                const emptyOption = document.createElement("option");
+                emptyOption.value = "";
+                emptyOption.text = "-";
+                select.appendChild(emptyOption);
+
+                employees.forEach(emp => {
+                    const option = document.createElement("option");
+                    option.value = emp;
+                    option.text = emp;
+                    if (emp === value) option.selected = true;
+                    select.appendChild(option);
+                });
+                td.appendChild(select);
+            }
+            tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+    });
+
+    document.getElementById("schedule").style.display = "";
+    document.getElementById("calcBtn").style.display = "";
+    document.getElementById("exportBtn").style.display = "";
+    document.getElementById("printBtn").style.display = "";
+}
+
+function printSchedule() {
+    const printable = document.getElementById("printArea");
+    printable.innerHTML = "<h2>班表列印版</h2><table border='1'><tr><th>日期</th><th>星期</th><th>早班</th><th>午班</th><th>晚班</th></tr>";
+
+    document.querySelectorAll("#schedule tbody tr").forEach(row => {
+        printable.innerHTML += "<tr>" + Array.from(row.children).map(td => `<td>${td.querySelector("select") ? td.querySelector("select").value : td.textContent}</td>`).join("") + "</tr>";
+    });
+
+    printable.innerHTML += "</table>";
+    printable.style.display = "block";
+    window.print();
+    printable.style.display = "none";
+}
+
+window.onload = function() {
+    loadSchedule();
+    const savedEmployees = localStorage.getItem("savedEmployeeList");
+    if (savedEmployees) {
+        document.getElementById("employeeInput").value = savedEmployees;
+    }
+    loadEmployeeHistory();
+};
+</script>
+
+</body>
+</html>
